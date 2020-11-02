@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bolt"
+	"math/big"
 )
+
 
 //桶的名称，该桶用于装区块信息
 var BUCKET_NAME ="blocks"
@@ -13,6 +15,7 @@ var LAST_KEY = "lasthash"
 //存储区块数据的文件
 var CHAIANDB  = "chain.db"
 
+var CHAIN BlockChain
 /**
 区块链结构体实例定义 ：用于表示代表一条区块链
 该区块链包含以下功能:
@@ -21,9 +24,77 @@ var CHAIANDB  = "chain.db"
     3.可以将所有区块进行遍历，输出区块信息
 */
 type BlockChain struct {
-	LashHash []byte//最新区块
-	BoltDb *bolt.DB
+	LashHash []byte //最新区块
+	BoltDb   *bolt.DB
 }
+
+/**
+ * 查询所有的区块信息，并返回。将所有的区块放入到切片中
+ */
+func (bc BlockChain)QueryAllBlocks() []*Block  {
+	blocks :=make([]*Block,0)
+
+	db :=bc.BoltDb
+	db.View(func(tx *bolt.Tx) error {
+		bucket :=tx.Bucket([]byte(BUCKET_NAME))
+		if bucket == nil {
+			panic("查询数据出现错误")
+		}
+		eachKey :=bc.LashHash
+		preHashBig := new(big.Int)
+		zeroBig :=big.NewInt(0)//0的大整数
+		for {
+		eachBlockByter := bucket.Get(eachKey)
+		//反序列化后得到每一个区块
+		 eachBlock ,_ :=DeSerialize(eachBlockByter)
+		 //将遍历到每一个区块链体指针放入到[]byte容器中
+		 blocks = append(blocks,eachBlock)
+		 preHashBig.SetBytes(eachBlock.PrevHash)
+			if preHashBig.Cmp(zeroBig) ==0 {  //通过if条件语句判断区块链遍历是否已到创世区块，如果到创世区块，跳出循环
+				break
+			}
+		 eachKey =eachBlock.PrevHash
+		}
+		return nil
+	})
+	return blocks
+}
+
+/**
+ * 通过区块的高度查询某个具体的区块，返回区块实例
+ */
+
+func (bc BlockChain)QueryBlockByHeight(height int64) *Block  {
+	if height<0{
+		return nil
+	}
+	var block *Block
+	db :=bc.BoltDb
+	db.View(func(tx *bolt.Tx) error {
+		bucket :=tx.Bucket([]byte(BUCKET_NAME))
+		if bucket ==nil {
+			panic("查询数据失败了")
+		}
+		hashKey := bc.LashHash
+		for{
+			lastBlockBytes := bucket.Get(hashKey)
+			eachBlock ,_ := DeSerialize(lastBlockBytes)
+			if eachBlock.Height<height{//给定的数字超出区块链中的区块高度，直接返回
+				break
+			}
+			if eachBlock.Height ==height {//高度和目标一致，已找到目标区块，结束循环
+				block = eachBlock
+				break
+			}
+			//遍历的当前的区块的高度与目标高度不一致，继续往前遍历
+			//以eachBlock.PrevHash为key，使用Get获取上一个区块的数据
+			hashKey =eachBlock.PrevHash
+		}
+		return nil
+	})
+	return block
+}
+
 /**
 用于创建一条区块链，并返回区块链实例
   解释 ：用于区块链就是由一个一个的区块组成的,因此，如果要创建一条区块链，那么必须要先
@@ -73,8 +144,46 @@ func NewBlockChain() BlockChain {
 		return nil
 
 	})
+	CHAIN = bl
 	return bl
 }
+/**
+ * 该方法用于根据用户传入的认证id查询区块的信息，并返回
+ */
+func (bc BlockChain)QueryBlockByCertId(cert_id []byte)(*Block,error)  {
+	var block *Block
+	db :=bc.BoltDb
+	var err  error
+	db.View(func(tx *bolt.Tx) error {
+		bucket :=tx.Bucket([]byte(BUCKET_NAME))
+		if bucket == nil {
+			err =errors.New("查询区块数据遇到错误了")
+			return err
+		}
+      eachHash := bucket.Get([]byte(LAST_KEY))
+      eachBig := new(big.Int)
+      zeroBig :=big.NewInt(0)
+      for{
+      	eachBlockBytes := bucket.Get(eachHash)
+      	eachBlock ,_:= DeSerialize(eachBlockBytes)
+		  //找到的情况
+		  if string(eachBlock.Data) == string(cert_id) {
+			  block = eachBlock
+			  break
+		  }
+		  //找不到的情况：即已经到创世区块，还有找到，直接跳出循环
+		  eachBig.SetBytes(eachBlock.PrevHash)
+		  if eachBig.Cmp(zeroBig) ==0 {
+			  break
+		  }
+		  eachHash = eachBlock.PrevHash
+	  }
+	  return  nil
+	})
+
+	return block ,nil
+}
+
 /**
 调用BlockChain的SaveBlock方法，该方法可以将一个生成的新区块保存到chain.db文件中
 */
